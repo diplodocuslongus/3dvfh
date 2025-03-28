@@ -374,25 +374,29 @@ def obs_callback(msg):
     #    print(p.x, p.y, p.z)
     #avd_dir = vfh_plus_3d_pointcloud(msg.points, np.array([1.0, 0.0, 0.0]), 10, 4.0, 1.2)
 
-    # Lookup the transform from "map" to "body"
-    transform = tf_buffer.lookup_transform(
-        "body",  # Target frame
-        "map",   # Source frame
-        rclpy.time.Time(),  # Use the latest available transform
-        timeout=rclpy.duration.Duration(seconds=1.0)
-    )
+    try:
+        # Lookup the transform from "map" to "body"
+        transform = tf_buffer.lookup_transform(
+            "body",  # Target frame
+            "map",   # Source frame
+            rclpy.time.Time(),  # Use the latest available transform
+            timeout=rclpy.duration.Duration(seconds=0.1)
+        )
+    except Exception as e:
+        return
 
     # Transform the point
     point_in_body = do_transform_point(point_in_map, transform)
 
     avd_dir = vfh_star_3d_pointcloud_target_direction(msg.points, np.array([point_in_body.point.x, point_in_body.point.y, point_in_body.point.z]))
-    m = TwistStamped()
-    m.header.frame_id = "body"
-    m.header.stamp = node.get_clock().now().to_msg()
-    m.twist.linear.x = avd_dir[0]
-    m.twist.linear.y = avd_dir[1]
-    m.twist.linear.z = avd_dir[2]
-    avd_pub.publish(m)
+
+    #m = TwistStamped()
+    #m.header.frame_id = "body"
+    #m.header.stamp = node.get_clock().now().to_msg()
+    #m.twist.linear.x = avd_dir[0]
+    #m.twist.linear.y = avd_dir[1]
+    #m.twist.linear.z = avd_dir[2]
+    #avd_pub.publish(m)
 
 rclpy.init()
 node = rclpy.create_node('obs_avd')
