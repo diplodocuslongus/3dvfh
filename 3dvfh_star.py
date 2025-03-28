@@ -372,31 +372,8 @@ def obs_callback(msg):
     #print(type(msg.points))
     #for p in msg.points:
     #    print(p.x, p.y, p.z)
-    #avd_dir = vfh_plus_3d_pointcloud(msg.points, np.array([1.0, 0.0, 0.0]), 10, 4.0, 1.2)
-
-    try:
-        # Lookup the transform from "map" to "body"
-        transform = tf_buffer.lookup_transform(
-            "body",  # Target frame
-            "map",   # Source frame
-            rclpy.time.Time(),  # Use the latest available transform
-            timeout=rclpy.duration.Duration(seconds=0.1)
-        )
-    except Exception as e:
-        return
-
-    # Transform the point
-    point_in_body = do_transform_point(point_in_map, transform)
-
-    avd_dir = vfh_star_3d_pointcloud_target_direction(msg.points, np.array([point_in_body.point.x, point_in_body.point.y, point_in_body.point.z]))
-
-    #m = TwistStamped()
-    #m.header.frame_id = "body"
-    #m.header.stamp = node.get_clock().now().to_msg()
-    #m.twist.linear.x = avd_dir[0]
-    #m.twist.linear.y = avd_dir[1]
-    #m.twist.linear.z = avd_dir[2]
-    #avd_pub.publish(m)
+    global latest_obs
+    latest_obs = msg.points
 
 rclpy.init()
 node = rclpy.create_node('obs_avd')
@@ -409,17 +386,43 @@ point_in_map.point.x = 5.0
 point_in_map.point.y = 0.0
 point_in_map.point.z = 1.0
 
+latest_obs = []
+
 # Create a TF2 buffer and listener
 tf_buffer = Buffer()
-tf_listener = TransformListener(tf_buffer, node)
+tf_listener = TransformListener(tf_buffer, node, spin_thread=False)
 
 obs_sub = node.create_subscription(PointCloud, "obstacles", obs_callback, 1)
 avd_pub = node.create_publisher(TwistStamped, "avoid_direction", 1)
 
-try:
-    rclpy.spin(node)
-except KeyboardInterrupt:
-    pass
+while rclpy.ok():
+    try:
+        rclpy.spin_once(node)
+        if latest_obs:
+            try:
+                # Lookup the transform from "map" to "body"
+                transform = tf_buffer.lookup_transform(
+                    "body",  # Target frame
+                    "map",   # Source frame
+                    rclpy.time.Time(),  # Use the latest available transform
+                    timeout=rclpy.duration.Duration(seconds=0.0)
+                )
+            except Exception as e:
+                print(e)
+            else:
+                # Transform the point
+                point_in_body = do_transform_point(point_in_map, transform)
+                avd_dir = vfh_star_3d_pointcloud_target_direction(latest_obs, np.array([point_in_body.point.x, point_in_body.point.y, point_in_body.point.z]))
+                m = TwistStamped()
+                m.header.frame_id = "body"
+                m.header.stamp = node.get_clock().now().to_msg()
+                m.twist.linear.x = avd_dir[0]
+                m.twist.linear.y = avd_dir[1]
+                m.twist.linear.z = avd_dir[2]
+                avd_pub.publish(m)
+                latest_obs = []
+    except KeyboardInterrupt:
+        break
 rclpy.try_shutdown()
 print("bye")
 
