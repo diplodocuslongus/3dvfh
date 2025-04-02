@@ -1,16 +1,16 @@
 import rclpy, math
 import numpy as np
 from rclpy.node import Node
-from sensor_msgs.msg import PointCloud
+from sensor_msgs.msg import PointCloud2, Image, PointCloud
 from geometry_msgs.msg import TwistStamped, PointStamped
 from nav_msgs.msg import Odometry
 from tf2_ros import Buffer, TransformListener
 from tf2_geometry_msgs import do_transform_point
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from sensor_msgs_py import point_cloud2
+from std_msgs.msg import Header
 
-import numpy as np
-import math
-
-def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_yaw, prv_pitch, bin_size=10, max_range=4.0, safety_distance=1.0, alpha=0.5, valley_threshold=0.1):
+def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_yaw, prv_pitch, bin_size=10, max_range=4.0, safety_distance=1.0, alpha=0.5, valley_threshold=0.1, prv_weight=0.1):
     """
     Implements a simplified 3D Vector Field Histogram* (VFH*) for UAV obstacle avoidance,
     using 3D point cloud and a target direction vector as input, returning a normalized 3D vector.
@@ -58,6 +58,19 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
             pitch_bin = int((math.degrees(pitch) + 90) // bin_size) % (180 // bin_size)
 
             histogram[yaw_bin, pitch_bin] += magnitude
+
+            # Add to neighboring
+            hy = (yaw_bin + 1) % (360 // bin_size)
+            hp = (pitch_bin + 1) % (180 // bin_size)
+            sw = magnitude * 0.5
+            histogram[yaw_bin-1, pitch_bin-1] += sw
+            histogram[yaw_bin-1, pitch_bin] += sw
+            histogram[yaw_bin-1, hp] += sw
+            histogram[yaw_bin, pitch_bin-1] += sw
+            histogram[yaw_bin, hp] += sw
+            histogram[hy, pitch_bin-1] += sw
+            histogram[hy, pitch_bin] += sw
+            histogram[hy, hp] += sw
 
     # 2. Polar Histogram Reduction (Valley Detection)
     # (Simplified valley detection)
@@ -107,11 +120,11 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
             # Favor previous yaw by adding a penalty for deviation from prv_yaw
             if prv_yaw is not None:
                 yaw_bin_radians = math.radians(yaw_bin * bin_size - 180)
-                cost += 0.4 * abs(yaw_bin_radians - prv_yaw)  # Adjust the weight (0.1) as needed
+                cost += prv_weight * abs(yaw_bin_radians - prv_yaw)  # Adjust the weight (0.1) as needed
 
             if prv_pitch is not None:
                 pitch_bin_radians = math.radians(pitch_bin * bin_size - 90)
-                cost += 0.4 * abs(pitch_bin_radians - prv_pitch)  # Adjust pitch weight (e.g., 0.1)
+                cost += prv_weight * abs(pitch_bin_radians - prv_pitch)  # Adjust pitch weight (e.g., 0.1)
 
             if valley_mask[yaw_bin, pitch_bin]:
                 cost = cost * 0.5 # lower cost for valley bins, encourage valley following.
@@ -126,12 +139,56 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
 
     return best_yaw, best_pitch
 
+def disparity_to_3d(disparity, f, B, cx, cy):
+    """
+    Converts a disparity image to 3D points using NumPy.
+
+    Args:
+        disparity (numpy.ndarray): Disparity image (2D array).
+        f (float): Focal length of the camera.
+        B (float): Baseline (distance between the stereo cameras).
+        cx (float): Principal point x-coordinate.
+        cy (float): Principal point y-coordinate.
+
+    Returns:
+        numpy.ndarray: Nx3 array of 3D points.
+    """
+    # Get the image dimensions
+    h, w = disparity.shape
+
+    # Create a grid of pixel coordinates
+    x_coords, y_coords = np.meshgrid(np.arange(w), np.arange(h))
+
+    # Avoid division by zero by masking invalid disparity values
+    valid_mask = disparity > 0
+
+    # Compute depth (Z)
+    Z = np.zeros_like(disparity, dtype=np.float32)
+    Z[valid_mask] = (f * B) / (disparity[valid_mask]*0.125)
+
+    # Compute X and Y
+    X = (x_coords - cx) * Z / f
+    Y = (y_coords - cy) * Z / f
+
+    # Stack X, Y, Z into an Nx3 array of 3D points
+    points_3d = np.stack((Z[valid_mask], -X[valid_mask], -Y[valid_mask]), axis=-1)
+
+    return points_3d
+
 def obs_callback(msg):
     #print(type(msg.points))
     #for p in msg.points:
     #    print(p.x, p.y, p.z)
     global latest_obs
     latest_obs = msg.points
+
+def disp_callback(img_msg):
+    global latest_obs
+    latest_obs = disparity_to_3d(np.frombuffer(img_msg.data, dtype=np.uint16).reshape(img_msg.height, img_msg.width), 470.051*0.25, 0.0750492, 314.96*0.25, 229.359*0.25)
+    header = Header()
+    header.frame_id = "body"
+    header.stamp = node.get_clock().now().to_msg()
+    pc_pub.publish(point_cloud2.create_cloud_xyz32(header, latest_obs))
 
 rclpy.init()
 node = rclpy.create_node('obs_avd')
@@ -144,13 +201,16 @@ point_in_map.point.x = 5.0
 point_in_map.point.y = 0.0
 point_in_map.point.z = 1.0
 
-latest_obs = []
+latest_obs = None
 
 # Create a TF2 buffer and listener
 tf_buffer = Buffer()
 tf_listener = TransformListener(tf_buffer, node, spin_thread=False)
 
+#best_effort_qos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, history=HistoryPolicy.KEEP_LAST, depth=1)
 obs_sub = node.create_subscription(PointCloud, "obstacles", obs_callback, 1)
+#pc_pub = node.create_publisher(PointCloud2, "obstacles", best_effort_qos)
+#disp_sub = node.create_subscription(Image, "disparity", disp_callback, qos_profile=best_effort_qos)
 avd_pub = node.create_publisher(TwistStamped, "avoid_direction", 1)
 
 prv_yaw = None
@@ -159,7 +219,7 @@ prv_pitch = None
 while rclpy.ok():
     try:
         rclpy.spin_once(node)
-        if latest_obs:
+        if latest_obs is not None:
             try:
                 # Lookup the transform from "map" to "body"
                 transform = tf_buffer.lookup_transform(
@@ -169,11 +229,12 @@ while rclpy.ok():
                     timeout=rclpy.duration.Duration(seconds=0.0)
                 )
             except Exception as e:
-                print(e)
+                #print(e)
+                pass
             else:
                 # Transform the point
                 point_in_body = do_transform_point(point_in_map, transform)
-                best_yaw, best_pitch = vfh_star_3d_pointcloud_target_direction(latest_obs, np.array([point_in_body.point.x, point_in_body.point.y, point_in_body.point.z]), prv_yaw, prv_pitch, safety_distance=1.2)
+                best_yaw, best_pitch = vfh_star_3d_pointcloud_target_direction(latest_obs, np.array([point_in_body.point.x, point_in_body.point.y, point_in_body.point.z]), prv_yaw, prv_pitch, safety_distance=1.0, alpha=0.25, prv_weight=0.4)
                 prv_yaw = best_yaw
                 prv_pitch = best_pitch
 
@@ -194,7 +255,8 @@ while rclpy.ok():
                 m.twist.linear.y = avd_vel[1]
                 m.twist.linear.z = avd_vel[2]
                 avd_pub.publish(m)
-                latest_obs = []
+
+                latest_obs = None
     except KeyboardInterrupt:
         break
 rclpy.try_shutdown()
