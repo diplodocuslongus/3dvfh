@@ -6,7 +6,31 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs_py import point_cloud2
 from std_msgs.msg import Header
 
-def disparity_to_3d(disparity, f, B, cx, cy):
+def median_bin_5x5(image, n):
+    """
+    Perform 5x5 median binning on a mono image.
+
+    Args:
+        image (numpy.ndarray): Input 2D mono image.
+
+    Returns:
+        numpy.ndarray: Downsampled image after 5x5 median binning.
+    """
+    # Ensure the image dimensions are divisible by 5
+    h, w = image.shape
+    h_new, w_new = h // n, w // n
+    image = image[:h_new * n, :w_new * n]  # Crop to make divisible by 5
+
+    # Reshape into 5x5 blocks
+    reshaped = image.reshape(h_new, n, w_new, n)
+
+    # Compute the median for each 5x5 block
+    #binned = np.median(reshaped, axis=(1, 3)).astype(np.uint16)
+    binned = np.median(reshaped, axis=(1, 3))
+
+    return binned
+
+def disparity_to_3d(disparity, f, B, cx, cy, n):
     """
     Converts a disparity image to 3D points using NumPy.
 
@@ -20,6 +44,10 @@ def disparity_to_3d(disparity, f, B, cx, cy):
     Returns:
         numpy.ndarray: Nx3 array of 3D points.
     """
+    f = f / n
+    cx = cx /n
+    cy = cy / n
+
     # Get the image dimensions
     h, w = disparity.shape
 
@@ -31,7 +59,7 @@ def disparity_to_3d(disparity, f, B, cx, cy):
 
     # Compute depth (Z)
     Z = np.zeros_like(disparity, dtype=np.float32)
-    Z[valid_mask] = (f * B) / (disparity[valid_mask]*0.125)
+    Z[valid_mask] = (f * B) / (disparity[valid_mask]*0.125/n)
 
     # Compute X and Y
     X = (x_coords - cx) * Z / f
@@ -44,18 +72,32 @@ def disparity_to_3d(disparity, f, B, cx, cy):
 
 def disp_callback(img_msg):
     #print(type(img_msg.data))
-    p_3d = disparity_to_3d(np.frombuffer(img_msg.data, dtype=np.uint16).reshape(img_msg.height, img_msg.width), 470.051*0.25, 0.0750492, 314.96*0.25, 229.359*0.25)
+    n=10
+    binned = median_bin_5x5(np.frombuffer(img_msg.data, dtype=np.uint16).reshape(img_msg.height, img_msg.width), n)
+    #print(binned.shape, binned.dtype)
+    p_3d = disparity_to_3d(binned, 470.051, 0.0750492, 314.96, 229.359, n)
     header = Header()
     header.frame_id = "body"
     header.stamp = node.get_clock().now().to_msg()
     pc_pub.publish(point_cloud2.create_cloud_xyz32(header, p_3d))
 
+    #img = Image()
+    #img.header = header
+    #img.height = 48
+    #img.width = 64
+    #img.is_bigendian = 0
+    #img.encoding = "mono16"
+    #img.step = img.width*2
+    #img.data = binned.ravel().view(np.uint8)
+    #img_pub.publish(img)
+
 rclpy.init()
 node = rclpy.create_node('disp_pc')
 
 best_effort_qos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, history=HistoryPolicy.KEEP_LAST, depth=1)
-pc_pub = node.create_publisher(PointCloud2, "obstacles", 1)
+pc_pub = node.create_publisher(PointCloud2, "obstacles", best_effort_qos)
 disp_sub = node.create_subscription(Image, "disparity", disp_callback, qos_profile=best_effort_qos)
+img_pub = node.create_publisher(Image, "binned", best_effort_qos)
 
 while rclpy.ok():
     try:
