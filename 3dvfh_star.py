@@ -73,20 +73,48 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
 #            histogram[hy, pitch_bin] += sw
 #            histogram[hy, hp] += sw
 
+    # Define the yaw range (in degrees)
+    yaw_min = -50  # Minimum yaw angle
+    yaw_max = 50   # Maximum yaw angle
+
+    # Convert yaw range to bins
+    yaw_min_bin = int((yaw_min + 180) // bin_size) % (360 // bin_size)
+    yaw_max_bin = int((yaw_max + 180) // bin_size) % (360 // bin_size)
+
+    # Define the pitch range (in degrees)
+    pitch_min = -40  # Minimum pitch angle
+    pitch_max = 40   # Maximum pitch angle
+
+    # Convert pitch range to bins
+    pitch_min_bin = int((pitch_min + 90) // bin_size) % (180 // bin_size)
+    pitch_max_bin = int((pitch_max + 90) // bin_size) % (180 // bin_size)
+
+    to_inflate = []
+    for yaw_bin in range(yaw_min_bin, yaw_max_bin + 1):
+        for pitch_bin in range(pitch_min_bin, pitch_max_bin + 1):  # Restrict pitch_bin to the specified range
+            if histogram[yaw_bin, pitch_bin] < valley_threshold:
+                big = np.max(np.array((histogram[(yaw_bin + 1) % (360 // bin_size), pitch_bin], histogram[yaw_bin - 1, pitch_bin], histogram[yaw_bin, (pitch_bin + 1) % (180 // bin_size)], histogram[yaw_bin, pitch_bin - 1])))
+                if big > valley_threshold and histogram[yaw_bin, pitch_bin] / big < 0.1:
+                    to_inflate.append((yaw_bin, pitch_bin, big))
+    for ff in to_inflate:
+        #print("from", histogram[ff[0], ff[1]], "to", ff[2]*0.8)
+        histogram[ff[0], ff[1]] = ff[2]
+    #print(len(to_inflate))
+
     # 2. Polar Histogram Reduction (Valley Detection)
     # (Simplified valley detection)
 
     valley_mask = np.zeros_like(histogram, dtype=bool)
 
-    for yaw_bin in range(360 // bin_size):
-        for pitch_bin in range(180 // bin_size):
+    for yaw_bin in range(yaw_min_bin, yaw_max_bin + 1):
+        for pitch_bin in range(pitch_min_bin, pitch_max_bin + 1):
             # Check for local minima (valleys).
             if (
+                histogram[yaw_bin, pitch_bin] < valley_threshold and
                 histogram[yaw_bin, pitch_bin] < histogram[(yaw_bin + 1) % (360 // bin_size), pitch_bin] and
-                histogram[yaw_bin, pitch_bin] < histogram[(yaw_bin - 1) % (360 // bin_size), pitch_bin] and
+                histogram[yaw_bin, pitch_bin] < histogram[yaw_bin - 1, pitch_bin] and
                 histogram[yaw_bin, pitch_bin] < histogram[yaw_bin, (pitch_bin + 1) % (180 // bin_size)] and
-                histogram[yaw_bin, pitch_bin] < histogram[yaw_bin, (pitch_bin - 1) % (180 // bin_size)] and
-                histogram[yaw_bin, pitch_bin] < valley_threshold
+                histogram[yaw_bin, pitch_bin] < histogram[yaw_bin, pitch_bin - 1]
             ):
                 valley_mask[yaw_bin, pitch_bin] = True
 
@@ -264,7 +292,7 @@ while rclpy.ok():
             else:
                 # Transform the point
                 point_in_body = do_transform_point(point_in_map, transform)
-                best_yaw, best_pitch = vfh_star_3d_pointcloud_target_direction(latest_obs, np.array([point_in_body.point.x, point_in_body.point.y, point_in_body.point.z]), prv_yaw, prv_pitch, safety_distance=1.0, alpha=0.25, prv_weight=0.4)
+                best_yaw, best_pitch = vfh_star_3d_pointcloud_target_direction(latest_obs, np.array([point_in_body.point.x, point_in_body.point.y, point_in_body.point.z]), prv_yaw, prv_pitch, safety_distance=1.0, alpha=0.2, prv_weight=0.4)
                 prv_yaw = best_yaw
                 prv_pitch = best_pitch
 
