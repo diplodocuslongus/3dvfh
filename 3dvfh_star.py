@@ -10,7 +10,7 @@ from tf2_geometry_msgs import do_transform_point
 import numpy as np
 import math
 
-def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, bin_size=12, max_range=4.0, safety_distance=1.0, alpha=0.25, valley_threshold=0.1):
+def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_yaw, prv_pitch, bin_size=10, max_range=4.0, safety_distance=1.0, alpha=0.5, valley_threshold=0.1):
     """
     Implements a simplified 3D Vector Field Histogram* (VFH*) for UAV obstacle avoidance,
     using 3D point cloud and a target direction vector as input, returning a normalized 3D vector.
@@ -76,6 +76,22 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, bin_s
             ):
                 valley_mask[yaw_bin, pitch_bin] = True
 
+    # Define the yaw range (in degrees)
+    yaw_min = -22  # Minimum yaw angle
+    yaw_max = 22   # Maximum yaw angle
+
+    # Convert yaw range to bins
+    yaw_min_bin = int((yaw_min + 180) // bin_size) % (360 // bin_size)
+    yaw_max_bin = int((yaw_max + 180) // bin_size) % (360 // bin_size)
+
+    # Define the pitch range (in degrees)
+    pitch_min = -22  # Minimum pitch angle
+    pitch_max = 22   # Maximum pitch angle
+
+    # Convert pitch range to bins
+    pitch_min_bin = int((pitch_min + 90) // bin_size) % (180 // bin_size)
+    pitch_max_bin = int((pitch_max + 90) // bin_size) % (180 // bin_size)
+
     # 3. Target Direction Selection (VFH* Modification)
     yaw_target_bin = int((math.degrees(yaw_target) + 180) // bin_size) % (360 // bin_size)
     pitch_target_bin = int((math.degrees(pitch_target) + 90) // bin_size) % (180 // bin_size)
@@ -83,10 +99,20 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, bin_s
     best_yaw_bin, best_pitch_bin = yaw_target_bin, pitch_target_bin
     min_cost = float('inf')
 
-    for yaw_bin in range(360 // bin_size):
-        for pitch_bin in range(180 // bin_size):
+    for yaw_bin in range(yaw_min_bin, yaw_max_bin + 1):
+        for pitch_bin in range(pitch_min_bin, pitch_max_bin + 1):  # Restrict pitch_bin to the specified range
             # VFH* cost function: obstacle density + weighted distance from target, prioritize valleys.
             cost = histogram[yaw_bin, pitch_bin] + alpha * math.sqrt((yaw_bin - yaw_target_bin)**2 + (pitch_bin - pitch_target_bin)**2)
+
+            # Favor previous yaw by adding a penalty for deviation from prv_yaw
+            if prv_yaw is not None:
+                yaw_bin_radians = math.radians(yaw_bin * bin_size - 180)
+                cost += 0.4 * abs(yaw_bin_radians - prv_yaw)  # Adjust the weight (0.1) as needed
+
+            if prv_pitch is not None:
+                pitch_bin_radians = math.radians(pitch_bin * bin_size - 90)
+                cost += 0.4 * abs(pitch_bin_radians - prv_pitch)  # Adjust pitch weight (e.g., 0.1)
+
             if valley_mask[yaw_bin, pitch_bin]:
                 cost = cost * 0.5 # lower cost for valley bins, encourage valley following.
 
@@ -98,16 +124,7 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, bin_s
     best_yaw = math.radians(best_yaw_bin * bin_size - 180)
     best_pitch = math.radians(best_pitch_bin * bin_size - 90)
 
-    # Convert spherical coordinates to a 3D vector.
-    x = math.cos(best_pitch) * math.cos(best_yaw)
-    y = math.cos(best_pitch) * math.sin(best_yaw)
-    z = math.sin(best_pitch)
-
-    # Normalize the vector.
-    vector = np.array([x, y, z])
-    normalized_vector = vector / np.linalg.norm(vector)
-
-    return normalized_vector
+    return best_yaw, best_pitch
 
 def obs_callback(msg):
     #print(type(msg.points))
@@ -136,6 +153,9 @@ tf_listener = TransformListener(tf_buffer, node, spin_thread=False)
 obs_sub = node.create_subscription(PointCloud, "obstacles", obs_callback, 1)
 avd_pub = node.create_publisher(TwistStamped, "avoid_direction", 1)
 
+prv_yaw = None
+prv_pitch = None
+
 while rclpy.ok():
     try:
         rclpy.spin_once(node)
@@ -153,8 +173,20 @@ while rclpy.ok():
             else:
                 # Transform the point
                 point_in_body = do_transform_point(point_in_map, transform)
-                avd_dir = vfh_star_3d_pointcloud_target_direction(latest_obs, np.array([point_in_body.point.x, point_in_body.point.y, point_in_body.point.z]))
-                avd_vel = avd_dir * 0.2
+                best_yaw, best_pitch = vfh_star_3d_pointcloud_target_direction(latest_obs, np.array([point_in_body.point.x, point_in_body.point.y, point_in_body.point.z]), prv_yaw, prv_pitch, safety_distance=1.2)
+                prv_yaw = best_yaw
+                prv_pitch = best_pitch
+
+                # Convert spherical coordinates to a 3D vector.
+                x = math.cos(best_pitch) * math.cos(best_yaw)
+                y = math.cos(best_pitch) * math.sin(best_yaw)
+                z = math.sin(best_pitch)
+
+                # Normalize the vector.
+                v = np.array([x, y, z])
+                avd_dir = v / np.linalg.norm(v)
+
+                avd_vel = avd_dir * 0.3
                 m = TwistStamped()
                 m.header.frame_id = "body"
                 m.header.stamp = node.get_clock().now().to_msg()
