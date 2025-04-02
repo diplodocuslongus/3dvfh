@@ -6,7 +6,7 @@ from geometry_msgs.msg import TwistStamped, PointStamped
 from nav_msgs.msg import Odometry
 from tf2_ros import Buffer, TransformListener
 from tf2_geometry_msgs import do_transform_point
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from sensor_msgs_py import point_cloud2
 from std_msgs.msg import Header
 
@@ -39,9 +39,10 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
     histogram = np.zeros((360 // bin_size, 180 // bin_size)) # yaw x pitch
 
     for point in point_cloud:
-        x = point.x
-        y = point.y
-        z = point.z
+        #x = point.x
+        #y = point.y
+        #z = point.z
+        x, y, z = point
 
         depth = math.sqrt(x**2 + y**2 + z**2)
 
@@ -60,17 +61,17 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
             histogram[yaw_bin, pitch_bin] += magnitude
 
             # Add to neighboring
-            hy = (yaw_bin + 1) % (360 // bin_size)
-            hp = (pitch_bin + 1) % (180 // bin_size)
-            sw = magnitude * 0.5
-            histogram[yaw_bin-1, pitch_bin-1] += sw
-            histogram[yaw_bin-1, pitch_bin] += sw
-            histogram[yaw_bin-1, hp] += sw
-            histogram[yaw_bin, pitch_bin-1] += sw
-            histogram[yaw_bin, hp] += sw
-            histogram[hy, pitch_bin-1] += sw
-            histogram[hy, pitch_bin] += sw
-            histogram[hy, hp] += sw
+#            hy = (yaw_bin + 1) % (360 // bin_size)
+#            hp = (pitch_bin + 1) % (180 // bin_size)
+#            sw = magnitude * 0.5
+#            histogram[yaw_bin-1, pitch_bin-1] += sw
+#            histogram[yaw_bin-1, pitch_bin] += sw
+#            histogram[yaw_bin-1, hp] += sw
+#            histogram[yaw_bin, pitch_bin-1] += sw
+#            histogram[yaw_bin, hp] += sw
+#            histogram[hy, pitch_bin-1] += sw
+#            histogram[hy, pitch_bin] += sw
+#            histogram[hy, hp] += sw
 
     # 2. Polar Histogram Reduction (Valley Detection)
     # (Simplified valley detection)
@@ -90,16 +91,16 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
                 valley_mask[yaw_bin, pitch_bin] = True
 
     # Define the yaw range (in degrees)
-    yaw_min = -22  # Minimum yaw angle
-    yaw_max = 22   # Maximum yaw angle
+    yaw_min = -30  # Minimum yaw angle
+    yaw_max = 30   # Maximum yaw angle
 
     # Convert yaw range to bins
     yaw_min_bin = int((yaw_min + 180) // bin_size) % (360 // bin_size)
     yaw_max_bin = int((yaw_max + 180) // bin_size) % (360 // bin_size)
 
     # Define the pitch range (in degrees)
-    pitch_min = -22  # Minimum pitch angle
-    pitch_max = 22   # Maximum pitch angle
+    pitch_min = -20  # Minimum pitch angle
+    pitch_max = 20   # Maximum pitch angle
 
     # Convert pitch range to bins
     pitch_min_bin = int((pitch_min + 90) // bin_size) % (180 // bin_size)
@@ -139,7 +140,30 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, prv_y
 
     return best_yaw, best_pitch
 
-def disparity_to_3d(disparity, f, B, cx, cy):
+def median_bin(image, n):
+    """
+    Perform 5x5 median binning on a mono image.
+
+    Args:
+        image (numpy.ndarray): Input 2D mono image.
+
+    Returns:
+        numpy.ndarray: Downsampled image after 5x5 median binning.
+    """
+    # Ensure the image dimensions are divisible by 5
+    h, w = image.shape
+    h_new, w_new = h // n, w // n
+    image = image[:h_new * n, :w_new * n]  # Crop to make divisible by 5
+
+    # Reshape into 5x5 blocks
+    reshaped = image.reshape(h_new, n, w_new, n)
+
+    # Compute the median for each 5x5 block
+    binned = np.median(reshaped, axis=(1, 3))
+
+    return binned
+
+def disparity_to_3d(disparity, f, B, cx, cy, n):
     """
     Converts a disparity image to 3D points using NumPy.
 
@@ -153,6 +177,10 @@ def disparity_to_3d(disparity, f, B, cx, cy):
     Returns:
         numpy.ndarray: Nx3 array of 3D points.
     """
+    f = f / n
+    cx = cx / n
+    cy = cy / n
+
     # Get the image dimensions
     h, w = disparity.shape
 
@@ -164,7 +192,7 @@ def disparity_to_3d(disparity, f, B, cx, cy):
 
     # Compute depth (Z)
     Z = np.zeros_like(disparity, dtype=np.float32)
-    Z[valid_mask] = (f * B) / (disparity[valid_mask]*0.125)
+    Z[valid_mask] = (f * B) / (disparity[valid_mask] * 0.125 / n)
 
     # Compute X and Y
     X = (x_coords - cx) * Z / f
@@ -184,7 +212,9 @@ def obs_callback(msg):
 
 def disp_callback(img_msg):
     global latest_obs
-    latest_obs = disparity_to_3d(np.frombuffer(img_msg.data, dtype=np.uint16).reshape(img_msg.height, img_msg.width), 470.051*0.25, 0.0750492, 314.96*0.25, 229.359*0.25)
+    n=10
+    binned = median_bin(np.frombuffer(img_msg.data, dtype=np.uint16).reshape(img_msg.height, img_msg.width), n)
+    latest_obs = disparity_to_3d(binned, 470.051, 0.0750492, 314.96, 229.359, n)
     header = Header()
     header.frame_id = "body"
     header.stamp = node.get_clock().now().to_msg()
@@ -207,10 +237,10 @@ latest_obs = None
 tf_buffer = Buffer()
 tf_listener = TransformListener(tf_buffer, node, spin_thread=False)
 
-#best_effort_qos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, history=HistoryPolicy.KEEP_LAST, depth=1)
-obs_sub = node.create_subscription(PointCloud, "obstacles", obs_callback, 1)
-#pc_pub = node.create_publisher(PointCloud2, "obstacles", best_effort_qos)
-#disp_sub = node.create_subscription(Image, "disparity", disp_callback, qos_profile=best_effort_qos)
+best_effort_qos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, history=HistoryPolicy.KEEP_LAST, depth=1, durability=DurabilityPolicy.VOLATILE)
+#obs_sub = node.create_subscription(PointCloud, "obstacles", obs_callback, 1)
+pc_pub = node.create_publisher(PointCloud2, "obstacles", best_effort_qos)
+disp_sub = node.create_subscription(Image, "disparity", disp_callback, qos_profile=best_effort_qos)
 avd_pub = node.create_publisher(TwistStamped, "avoid_direction", 1)
 
 prv_yaw = None
