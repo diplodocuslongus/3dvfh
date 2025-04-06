@@ -80,10 +80,18 @@ def vfh_star_3d_pointcloud_target_direction(point_cloud, target_direction, bin_s
     yaw_target_bin = int((math.degrees(yaw_target) + 180) // bin_size) % (360 // bin_size)
     pitch_target_bin = int((math.degrees(pitch_target) + 90) // bin_size) % (180 // bin_size)
 
+    # Define the yaw range (in degrees)
+    yaw_min = -45  # Minimum yaw angle
+    yaw_max = 45   # Maximum yaw angle
+
+    # Convert yaw range to bins
+    yaw_min_bin = int((yaw_min + 180) // bin_size) % (360 // bin_size)
+    yaw_max_bin = int((yaw_max + 180) // bin_size) % (360 // bin_size)
+
     best_yaw_bin, best_pitch_bin = yaw_target_bin, pitch_target_bin
     min_cost = float('inf')
 
-    for yaw_bin in range(360 // bin_size):
+    for yaw_bin in range(yaw_min_bin, yaw_max_bin + 1):  # Restrict yaw_bin to the specified range
         for pitch_bin in range(180 // bin_size):
             # VFH* cost function: obstacle density + weighted distance from target, prioritize valleys.
             cost = histogram[yaw_bin, pitch_bin] + alpha * math.sqrt((yaw_bin - yaw_target_bin)**2 + (pitch_bin - pitch_target_bin)**2)
