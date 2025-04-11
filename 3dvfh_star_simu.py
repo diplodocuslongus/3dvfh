@@ -461,6 +461,7 @@ rclpy.init()
 node = rclpy.create_node('obs_avd')
 
 # Define a point in the "map" frame
+# that is the target
 point_in_map = PointStamped()
 point_in_map.header.frame_id = "map"
 point_in_map.header.stamp = node.get_clock().now().to_msg()
@@ -477,10 +478,13 @@ tf_listener = TransformListener(tf_buffer, node, spin_thread=False)
 best_effort_qos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, history=HistoryPolicy.KEEP_LAST, depth=1, durability=DurabilityPolicy.VOLATILE)
 #obs_sub = node.create_subscription(PointCloud, "obstacles", obs_callback, 1)
 pc_pub = node.create_publisher(PointCloud2, "obstacles", best_effort_qos)
-disp_sub = node.create_subscription(Image, "disparity", disp_callback, qos_profile=best_effort_qos)
+disp_sub = node.create_subscription(Image, "oakd/disparity", disp_callback, qos_profile=best_effort_qos)
 avd_pub = node.create_publisher(TwistStamped, "avoid_direction", 1)
 # added: publish the destination
 target_map_point_pub= node.create_publisher( PointStamped, 'target_map_point', 10)
+# added Subscribe to the UAV's trajectory
+# trajectory_subscription = node.create_subscription( PointStamped, 'uav_trajectory', trajectory_callback, 10)
+# latest_trajectory_point = None
 
 prv_yaw = None
 prv_pitch = None
@@ -490,6 +494,7 @@ histogram_prev = np.zeros((360 // bin_sz, 180 // bin_sz)) # yaw x pitch
 while rclpy.ok():
     try:
         rclpy.spin_once(node)
+        # publish the target so we can see it!
         target_map_point_pub.publish(point_in_map)
         # logger.info(f'Published PointStamped in the map frame: {point_in_map}')
         if latest_obs is not None:
@@ -500,6 +505,7 @@ while rclpy.ok():
                     "map",   # Source frame
                     rclpy.time.Time(),  # Use the latest available transform
                     timeout=rclpy.duration.Duration(seconds=0.0)
+                    # timeout=rclpy.duration.Duration(seconds=0.0)
                 )
                 logger.info(f'got latest_obs: {latest_obs}')
             except Exception as e:
@@ -510,8 +516,8 @@ while rclpy.ok():
                 # Transform the point
                 point_in_body = do_transform_point(point_in_map, transform)
                 # TODO add memory (previous histo)
-                best_yaw, best_pitch,histogram_prev = vfh_star_3d_pointcloud_target_direction(latest_obs,histogram_prev, np.array([point_in_body.point.x, point_in_body.point.y, point_in_body.point.z]), prv_yaw, prv_pitch, safety_distance=1.0, alpha=0.2, prv_weight=0.4)
-                # best_yaw, best_pitch = vfh_star_3d_pointcloud_target_direction(latest_obs, np.array([point_in_body.point.x, point_in_body.point.y, point_in_body.point.z]), prv_yaw, prv_pitch, safety_distance=1.0, alpha=0.2, prv_weight=0.4)
+                # best_yaw, best_pitch,histogram_prev = vfh_star_3d_pointcloud_target_direction(latest_obs,histogram_prev, np.array([point_in_body.point.x, point_in_body.point.y, point_in_body.point.z]), prv_yaw, prv_pitch, safety_distance=1.0, alpha=0.2, prv_weight=0.4)
+                best_yaw, best_pitch = vfh_star_3d_pointcloud_target_direction(latest_obs, np.array([point_in_body.point.x, point_in_body.point.y, point_in_body.point.z]), prv_yaw, prv_pitch, safety_distance=1.0, alpha=0.2, prv_weight=0.4)
                 prv_yaw = best_yaw
                 prv_pitch = best_pitch
 
