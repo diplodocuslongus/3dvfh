@@ -516,8 +516,8 @@ while rclpy.ok():
                 # Transform the point
                 point_in_body = do_transform_point(point_in_map, transform)
                 # TODO add memory (previous histo)
-                # best_yaw, best_pitch,histogram_prev = vfh_star_3d_pointcloud_target_direction(latest_obs,histogram_prev, np.array([point_in_body.point.x, point_in_body.point.y, point_in_body.point.z]), prv_yaw, prv_pitch, safety_distance=1.0, alpha=0.2, prv_weight=0.4)
-                best_yaw, best_pitch = vfh_star_3d_pointcloud_target_direction(latest_obs, np.array([point_in_body.point.x, point_in_body.point.y, point_in_body.point.z]), prv_yaw, prv_pitch, safety_distance=1.0, alpha=0.2, prv_weight=0.4)
+                best_yaw, best_pitch,histogram_prev = vfh_star_3d_pointcloud_target_direction_memory(latest_obs,histogram_prev, np.array([point_in_body.point.x, point_in_body.point.y, point_in_body.point.z]), prv_yaw, prv_pitch, safety_distance=1.0, alpha=0.2, prv_weight=0.4)
+                # best_yaw, best_pitch = vfh_star_3d_pointcloud_target_direction(latest_obs, np.array([point_in_body.point.x, point_in_body.point.y, point_in_body.point.z]), prv_yaw, prv_pitch, safety_distance=1.0, alpha=0.2, prv_weight=0.4)
                 prv_yaw = best_yaw
                 prv_pitch = best_pitch
 
